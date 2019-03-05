@@ -1,0 +1,180 @@
+#!/usr/bin/env lua
+
+-- bbq: SliTaz packages cooker
+
+local conf = dofile '/etc/bbq.conf' -- load BBQ configuration
+
+local alt_getopt = require 'alt_getopt'
+local lib        = require 'bbq.lib'
+local blk        = require 'bbq.blk'
+local src        = require 'bbq.src'
+
+local function printHelp()
+   print [[
+BBQ - SliTaz packages cooker
+
+Usage: bbq ([ -e | -s | -p | -b | -u | -d | -c | -C ] <pkg>)
+       (-f <file>)
+       (-D | -l | -h)
+
+Options:
+  -e --edit     <pkg>  Edit package receipt
+  -s --src      <pkg>  Get the package source tarball
+  -p --pack     <pkg>  Repack an already built package
+  -b --block    <pkg>  Block a package so BBQ will skip it
+  -u --unblock  <pkg>  Unblock a blocked package
+  -d --deps     <pkg>  Check dependencies of cooked package
+  -c --clean    <pkg>  Clean the package in the wok
+  -C --continue <pkg>  Continue cooking the package
+                <pkg>  Cook the package
+
+  -f --find     <file> Find file in packages DB
+
+  -D --pkgdb           Update packages DB
+  -l --list            List installed packages
+  -h --help            Show this help
+]]
+end
+
+
+local function editReceipt (pkg)
+   lib.exec ('vi %s/receipt', conf.wok..pkg)
+end
+
+
+local function getSrc (pkg)
+   lib.exec ('cook %s --getsrc', pkg)
+end
+
+
+local function packPkg (pkg)
+   lib.exec ('cook %s --pack', pkg)
+end
+
+
+local function findDeps (pkg)
+   lib.exec ('cook %s --deps', pkg)
+end
+
+
+local function cleanPkg (pkg)
+   lib.exec ('cook %s --clean', pkg)
+end
+
+
+local function updateDb ()
+   lib.exec ('cook pkgdb')
+end
+
+
+local function searchFile (file)
+   lib.exec ('tazpkg -sf --mirror %s', file)
+end
+
+
+local function listPkgs ()
+   --lib.msg ('%{bright}List of all installed packages')
+   lib.exec ('tazpkg -l')
+end
+
+
+local function parseRecipe (pkg)
+   local rc = lib.readRc (pkg)
+
+   lib.msg ('%s-%s: %s', rc.name, rc.version, rc.summary)
+
+   if rc.src then
+      for i in ipairs (rc.src) do
+         lib.msg ('src: %s',
+            rc.src[i].url
+               :gsub ('<o>', rc.origin or '')
+               :gsub ('<n>', rc.name)
+               :gsub ('<v>', rc.version)
+            )
+         lib.msg ('     %s', rc.src[i].sha1 or '~undefined~')
+      end
+   end
+
+   if rc.pkgs then
+      for i in ipairs (rc.pkgs) do
+         local desc = rc.summary
+         if rc.pkgs[i].note then
+            desc = string.format ('%s (%s)', desc, rc.pkgs[i].note)
+         elseif rc.pkgs[i].pkg == 'dev' then
+            desc = string.format ('%s (development files)', desc)
+         elseif rc.pkgs[i].pkg == 'lib' then
+            desc = string.format ('%s (shared library)', desc)
+         end
+         lib.msg ('pkg: %s : %s',
+            rc.pkgs[i].pkg
+               :gsub ('^std$', rc.name)
+               :gsub ('^dev$', rc.name .. '-dev')
+               :gsub ('^lib$', 'lib' .. rc.name),
+            desc
+            )
+      end
+   end
+
+   if rc.license then
+      if type (rc.license) == 'string' then
+         lib.msg ('License: %s', rc.license)
+      elseif type (rc.license) == 'table' then
+         local licenses = ''
+         for i in ipairs (rc.license) do
+            licenses = licenses .. ', ' .. rc.license[i]
+         end
+         licenses = licenses:gsub ('^, ', '')
+         lib.msg ('Licenses: %s', licenses)
+      end
+   end
+
+end
+
+
+local long_opts = {
+   help     = 'h',
+   edit     = 'e',
+   src      = 's',
+   pack     = 'p',
+   block    = 'b',
+   unblock  = 'u',
+   deps     = 'd',
+   clean    = 'c',
+   continue = 0,
+   find     = 'f',
+   pkgdb    = 'D',
+   list     = 'l'
+}
+local optarg, optind = alt_getopt.get_opts (arg, 'he:s:p:b:u:d:c:f:r:t:CDl', long_opts)
+
+
+if #arg == 0 then
+   print ("BBQ: SliTaz packages cooker")
+   os.exit (0)
+end
+
+if optarg.h then printHelp () os.exit (0) end
+if optarg.e then editReceipt (optarg.e) end
+if optarg.s then getSrc      (optarg.s) end
+if optarg.p then packPkg     (optarg.p) end
+if optarg.d then findDeps    (optarg.d) end
+if optarg.c then cleanPkg    (optarg.c) end
+if optarg.b then blk.block   (optarg.b) end
+if optarg.u then blk.unblock (optarg.u) end
+if optarg.D then updateDb    ()         end
+if optarg.S then searchFile  (optarg.S) end
+if optarg.r then parseRecipe (optarg.r) end
+if optarg.l then listPkgs    (optarg.l) end
+
+if optarg.t then src.get     (optarg.t) end
+
+if arg[optind] then
+   if optarg.C then
+      lib.exec ('cook %s --continue', arg[optind])
+   else
+      lib.exec ('cook %s', arg[optind])
+   end
+end
+
+
+os.exit (0)
