@@ -168,6 +168,75 @@ end
 -- .deb .rpm .tar   .xz   .gz   .xpi   .bz2   .7z   .cpio
 
 
+local function applyPlaceholders (rc)
+   -- hiversion: high X.Y version
+   rc.hiversion = rc.version:gsub ('(%d+%.%d+).*', '%1')
+
+   -- subversion: substituted version
+   if rc.subversion then
+      if type (rc.subversion) == 'table' then
+         -- substitute function arguments: [from, to]
+         rc.sversion = rc.version:gsub(rc.subversion[1], rc.subversion[2])
+      elseif type (rc.subversion) == 'string' then
+         -- exact value
+         rc.sversion = rc.subversion
+      else
+         die ('Unknown type for "subversion": %s', type (rc.subversion))
+      end
+   end
+
+   local function ph (value)
+      return value
+         :gsub('<o>', rc.origin or '')            -- '$o' is placeholder for origin
+         :gsub('<n>', rc.name)                    -- '$n' - for name
+         :gsub('<v>', rc.version)                 -- '$v' - for version
+         :gsub('<V>', rc.hiversion)               -- '$V' - for X.Y hi-version (GNOME)
+         :gsub('<s>', rc.sversion or '')
+         :gsub('<w>', rc.home)
+   end
+
+   if rc.src then
+      for i in ipairs (rc.src) do
+         -- default file for VCS is like 'nano-git.tar.gz'
+         if rc.src[i].app then
+            if not rc.src[i].file then
+               rc.src[i].file = rc.name .. '-' .. rc.src[i].app .. '.tar.gz'
+            end
+            rc.src[i].vcsdir = rc.name .. '-' .. rc.src[i].app
+         end
+
+         rc.src[i].url = ph (rc.src[i].url)
+
+         -- apply pseudo-protocols in url
+         for pseudoProto, subUrl in pairs (conf.mirrors) do
+            rc.src[i].url = rc.src[i].url:gsub (pseudoProto, subUrl)
+         end
+
+         rc.src[i].file = ph (rc.src[i].file or rc.src[i].url:gsub('.*/', ''))   -- basename by default
+      end
+   end
+
+   if rc.prepare.patches then
+      for i in ipairs (rc.prepare.patches) do
+         if rc.prepare.patches[i].name then
+            rc.prepare.patches[i].name = ph (rc.prepare.patches[i].name)
+         end
+         if rc.prepare.patches[i].url then
+            rc.prepare.patches[i].url = ph (rc.prepare.patches[i].url)
+            -- apply pseudo-protocols in url
+            for pseudoProto, subUrl in pairs (conf.mirrors) do
+               rc.prepare.patches[i].url = rc.prepare.patches[i].url:gsub (pseudoProto, subUrl)
+            end
+         end
+      end
+   end
+
+   return rc
+end
+
+
+
+
 
 return {
    msg         = msg,
@@ -177,5 +246,6 @@ return {
    readRc      = readRc,
    emptyDir    = emptyDir,
    extractFile = extractFile,
-   comressDir  = comressDir
+   comressDir  = comressDir,
+   applyPlaceholders = applyPlaceholders
 }
