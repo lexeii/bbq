@@ -8,6 +8,7 @@ local alt_getopt = require 'alt_getopt'
 local lib        = require 'bbq.lib'
 local blk        = require 'bbq.blk'
 local src        = require 'bbq.src'
+local make       = require 'bbq.make'
 
 local function printHelp()
    print [[
@@ -80,17 +81,13 @@ end
 
 local function parseRecipe (pkg)
    local rc = lib.readRc (pkg)
+   rc = lib.applyPlaceholders (rc)
 
    lib.msg ('%s-%s: %s', rc.name, rc.version, rc.summary)
 
    if rc.src then
       for i in ipairs (rc.src) do
-         lib.msg ('src: %s',
-            rc.src[i].url
-               :gsub ('<o>', rc.origin or '')
-               :gsub ('<n>', rc.name)
-               :gsub ('<v>', rc.version)
-            )
+         lib.msg ('src: %s', rc.src[i].url)
          lib.msg ('     %s', rc.src[i].sha1 or '~undefined~')
       end
    end
@@ -127,6 +124,9 @@ local function parseRecipe (pkg)
          lib.msg ('Licenses: %s', licenses)
       end
    end
+
+   make.makePrepare (rc, '/tmp/script')
+   --local s = io.open ('/tmp/script')
 
 end
 
