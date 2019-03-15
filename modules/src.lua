@@ -175,7 +175,13 @@ local function get (pkg)
    -- subversion: substituted version, for example, to change from '.' to '_':
    -- { '%.', '_' }
    if rc.subversion then
-      rc.sversion = rc.version:gsub(rc.subversion[1], rc.subversion[2])
+      if type (rc.subversion) == 'table' then
+         rc.sversion = rc.version:gsub(rc.subversion[1], rc.subversion[2])
+      elseif type (rc.subversion) == 'string' then
+         rc.sversion = rc.subversion
+      else
+         lib.die ('Unknown type for "subversion": %s', type (rc.subversion))
+      end
    end
 
    -- remove prevous src (if any)
