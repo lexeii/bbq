@@ -196,42 +196,76 @@ local function applyPlaceholders (rc)
    end
 
    if rc.src then
-      for i in ipairs (rc.src) do
+      for i, j in ipairs (rc.src) do
          -- default file for VCS is like 'nano-git.tar.gz'
-         if rc.src[i].app then
-            if not rc.src[i].file then
-               rc.src[i].file = rc.name .. '-' .. rc.src[i].app .. '.tar.gz'
+         if j.app then
+            if not j.file then
+               rc.src[i].file = rc.name .. '-' .. j.app .. '.tar.gz'
             end
-            rc.src[i].vcsdir = rc.name .. '-' .. rc.src[i].app
+            rc.src[i].vcsdir  = rc.name .. '-' .. j.app
          end
 
-         rc.src[i].url = ph (rc.src[i].url)
+         rc.src[i].url = ph (j.url)
 
          -- apply pseudo-protocols in url
          for pseudoProto, subUrl in pairs (conf.mirrors) do
-            rc.src[i].url = rc.src[i].url:gsub (pseudoProto, subUrl)
+            rc.src[i].url = j.url:gsub (pseudoProto, subUrl)
          end
 
-         rc.src[i].file = ph (rc.src[i].file or rc.src[i].url:gsub('.*/', ''))   -- basename by default
+         rc.src[i].file = ph (j.file or j.url:gsub('.*/', ''))   -- basename by default
       end
    end
 
-   if rc.prepare.patches then
-      for i in ipairs (rc.prepare.patches) do
-         if rc.prepare.patches[i].name then
-            rc.prepare.patches[i].name = ph (rc.prepare.patches[i].name)
+   if rc.prepare and rc.prepare.patches then
+      for i, j in ipairs (rc.prepare.patches) do
+         if j.name then
+            rc.prepare.patches[i].name = ph (j.name)
          end
-         if rc.prepare.patches[i].url then
-            rc.prepare.patches[i].url = ph (rc.prepare.patches[i].url)
+
+         if j.url then
+            rc.prepare.patches[i].url = ph (j.url)
+
             -- apply pseudo-protocols in url
             for pseudoProto, subUrl in pairs (conf.mirrors) do
-               rc.prepare.patches[i].url = rc.prepare.patches[i].url:gsub (pseudoProto, subUrl)
+               rc.prepare.patches[i].url = j.url:gsub (pseudoProto, subUrl)
             end
+
          end
       end
    end
 
    return rc
+end
+
+
+
+
+local function checkIntegrity (src)
+   local stream, givenSum
+   local cmd = {
+      md5    = 'busybox md5sum',    sha1   = 'busybox sha1sum',
+      sha3   = 'busybox sha3sum',   sha256 = 'busybox sha256sum',
+      sha512 = 'busybox sha512sum', b2     = 'b2sum',
+      b2b    = 'b2sum -a blake2b',  b2s    = 'b2sum -a blake2s',
+      b2bp   = 'b2sum -a blake2bp', b2sp   = 'b2sum -a blake2sp'
+   }
+
+   for _, sum in ipairs {'md5', 'sha1', 'sha3', 'sha256', 'sha512', 'b2', 'b2b', 'b2s', 'b2bp', 'b2sp'} do
+      if src[sum] then
+         io.write (printf('Checking %9s of %s: ', sum..'sum', src.file))
+
+         stream = io.popen (cmd[sum]..' '..conf.src..src.file)
+         givenSum = stream:read():gsub('%s.+', '')
+
+         if givenSum == src[sum] then
+            msg ('%{green}Ok')
+         else
+            msg ('%{red}Failed')
+            return false -- fail immediately
+         end
+      end
+   end
+   return true -- all the checksums are Ok
 end
 
 
@@ -247,5 +281,6 @@ return {
    emptyDir    = emptyDir,
    extractFile = extractFile,
    comressDir  = comressDir,
-   applyPlaceholders = applyPlaceholders
+   applyPlaceholders = applyPlaceholders,
+   checkIntegrity    = checkIntegrity
 }
