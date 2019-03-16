@@ -104,9 +104,12 @@ local function parseRecipe (pkg)
          end
          lib.msg ('pkg: %s : %s',
             rc.pkgs[i].pkg
-               :gsub ('^std$', rc.name)
-               :gsub ('^dev$', rc.name .. '-dev')
-               :gsub ('^lib$', 'lib' .. rc.name),
+               :gsub ('^main$',  rc.name)
+               :gsub ('^dev$',   rc.name .. '-dev')
+               :gsub ('^lib$',   'lib' .. rc.name)
+               :gsub ('^-(.+)$', rc.name .. '-%1')
+               :gsub ('^(.+)-$', '%1-' .. rc.name)
+            ,
             desc
             )
       end
@@ -125,7 +128,7 @@ local function parseRecipe (pkg)
       end
    end
 
-   make.makePrepare (rc, '/tmp/script')
+   make.make (rc, '/tmp/script.sh')
    --local s = io.open ('/tmp/script')
 
 end
