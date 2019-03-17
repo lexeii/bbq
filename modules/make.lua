@@ -155,41 +155,40 @@ end
 
 
 
-local function outputList (branch, template, branchName)
+--[[
+variants:
+
+args: foo
+
+args:
+  - foo
+  - bar
+
+args:
+  - foo: bar
+  - baz: qux
+
+args:         # mixed:
+  - foo: bar  # foo="bar"
+  - baz=qux   # baz=qux
+  - rol:      # rol=""
+  - ose       # ose
+--]]
+
+local function Pairs (branch, template)
    local out = ''
    if type (branch) == 'string' then
       out = out .. lib.printf (template, branch)
    elseif type (branch) == 'table' then
-      for _, j in ipairs (branch) do
-         out = out .. lib.printf (template, j)
-      end
-   else
-      die ('Unsufficient type (%s) of "%s"', type(branch), branchName)
-   end
-   return out
-end
-
-
-
-
-local function outputPairs (branch, templateStr, template, branchName)
-   local out = ''
-   if type (branch) == 'string' then
-      out = out .. lib.printf (templateStr, branch)
-   elseif type (branch) == 'table' then
-      for i, j in pairs (branch) do
-         if type (j) == 'string' then
-            out = out .. lib.printf (template, i, j)
-         elseif type (j) == 'table' then
-            for k, l in pairs (j) do
-               out = out .. lib.printf (template, k, l)
+      for _, i in pairs (branch) do
+         if type (i) == 'string' then
+            out = out .. lib.printf (template, i)
+         elseif type (i) == 'table' then
+            for j,k in pairs (i) do
+               out = out .. lib.printf (template, j..'="'..k..'"')
             end
-         else
-            die ('Unsufficient type (%s) of "%s[%s][%s]"', type(j), branchName, i, j)
          end
       end
-   else
-      die ('Unsufficient type (%s) of "%s"', type(branch), branchName)
    end
    return out
 end
@@ -206,75 +205,159 @@ local function makeMake (recipe, s)
 
    s:write ('\nmake_rules() {\n')
 
-   if m.env then
-      s:write (outputPairs (m.env, 'export %s\n', 'export %s="%s"\n', 'make.env'))
-      s:write ('\n')
+   s:write (Pairs (m.env, 'export %s\n'))
+
+   -- use <defargs: ''> to DISABLE adding default $CONFIGURE_ARGS
+   if not m.defargs then
+      m.defargs = '$CONFIGURE_ARGS '
+   else
+      m.defargs = ''
    end
 
    if m.type == 'gnu' then
+      s:write (
+         Pairs (m.vars, '%s \\\n') ..
+         './configure \\\n' ..
+         Pairs (m.args,    '\t%s \\\n') ..
+         Pairs (m.defargs, '\t%s&&\n') ..
+         "if [ -e 'libtool' ]; then\n" ..
+         "\tsed -i 's| -shared | -Wl,-Os,--as-needed\\0|g' libtool\n" ..
+         "fi &&\n" ..
+         Pairs (m.makevars, '%s ') .. 'make ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.makeargs, '%s ') .. '&&\n' ..
+         Pairs (m.makevars, '%s ') .. 'make ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.makeargs, '%s ') ..
+         Pairs (m.destdir, 'DESTDIR=$install ') .. 'install || return 1\n'
+         )
 
-      s:write ('# type: gnu\n')
+   elseif m.type == 'cmake' then
+      s:write (
+         Pairs ((m.build or 'build'), 'mkdir %s\n') ..
+         Pairs ((m.build or 'build'), 'cd    %s\n') ..
+         Pairs (m.vars, '%s \\\n') ..
+         'cmake \\\n' ..
+         Pairs (m.args, '\t%s \\\n') ..
+         '\t.. &&\n' ..
+         Pairs (m.makevars, '%s ') .. 'make ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.makeargs, '%s ') .. '&&\n' ..
+         Pairs (m.makevars, '%s ') .. 'make ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.makeargs, '%s ') ..
+         Pairs (m.destdir, 'DESTDIR=$install ') .. 'install || return 1\n'
+         )
 
-      if m.vars then
-         s:write (outputPairs (m.vars, '%s \\\n', '%s="%s" \\\n', 'make.vars'))
-      end
+   elseif m.type == 'meson' then
+      s:write (
+         Pairs ((m.build or 'build'), 'mkdir %s\n') ..
+         Pairs ((m.build or 'build'), 'cd    %s\n') ..
+         Pairs (m.vars, '%s \\\n') ..
+         'meson-wrapper \\\n' ..
+         Pairs (m.args, '\t%s \\\n') ..
+         '\t&&\n' ..
+         Pairs (m.ninjavars, '%s ') .. 'ninja ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.ninjaargs, '%s ') .. '&&\n' ..
+         Pairs (m.ninjavars, '%s ') .. 'ninja ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.ninjaargs, '%s ') ..
+         Pairs (m.destdir, 'DESTDIR=$install ') .. 'install || return 1\n'
+         )
 
-      s:write ('./configure \\\n')
+   elseif m.type == 'python2' then
+      s:write (
+         'python2 -B setup.py install --root=$install &&\n' ..
+         "find $install -type f -name '*.pyc' -delete\n"
+         )
 
-      if m.args then
-         s:write (outputList (m.args, '\t%s \\\n', 'make.args'))
-      end
+   elseif m.type == 'python3' then
+      s:write (
+         'python3 -B setup.py install --root=$install &&\n' ..
+         "find $install -type f -name '*.pyc' -delete\n"
+         )
 
-      s:write ('\t$CONFIGURE_ARGS &&\n')
+   elseif m.type == 'python2+3' then
+      s:write (
+         'python2 -B setup.py install --root=$install &&\n' ..   -- use $install for python2
+         "find $install -type f -name '*.pyc' -delete\n" ..
+         'python3 -B setup.py install --root=$install-3 &&\n' .. -- use $install-3 for python3
+         "find $install-3 -type f -name '*.pyc' -delete\n"
+         )
 
+   elseif m.type == 'ruby' then
+      s:write (
+         [[
+gem install \
+  --no-document \
+  --ignore-dependencies \
+  --no-user-install \
+  --build-root $install \
+  $src/$TARBALL \
+]] ..
+         Pairs (m.args, '  %s \\\n') ..
+         '  || return 1\n'..
+         Pairs (m.insert, '%s') ..
+         [[
 
-      -- fix libtool (if any)
-      s:write ("if [ -e 'libtool' ]; then\n")
-      s:write ("\tsed -i 's| -shared | -Wl,-Os,--as-needed\\0|g' libtool\n")
-      s:write ("fi &&\n")
+# some useful operations while Ruby gems cooking
+_gems="$(ruby -e'puts Gem.default_dir')"
 
+# remove unwanted empty folders
+rmdir --ignore-fail-on-non-empty \
+  $install/$_gems/build_info/ \
+  $install/$_gems/cache/ \
+  $install/$_gems/doc/ \
+  $install/$_gems/extensions/
 
-      -- make
-      if m.makevars then
-         s:write (outputPairs (m.makevars, '%s ', '%s="%s" ', 'make.makevars'))
-      end
+# move files to docdir
+docdir=$install/usr/share/doc/$PACKAGE-$VERSION
+for i in $(ls -ap $install/$_gems/gems/${PACKAGE#*-}-$VERSION/ | sed '
+  /\/$/d; /^\./d; /gemspec$/d; /Rakefile*/d; /Gemfile*/d; /Makefile/d;
+  /\.c$/d; /\.h$/d; /\.o$/d; /\.rb$/d; /\.so$/d; /\.yml$/d;
+  /Manifest/d; /\.inc$/d; /depend/d;
+  '); do
+  mkdir -p $docdir # docdir will not be created when nothing to move
+  mv $install/$_gems/gems/${PACKAGE#*-}-$VERSION/$i $docdir
+done
+if [ -d $install/$_gems/gems/${PACKAGE#*-}-$VERSION/doc/ ]; then
+  mkdir -p $docdir
+  mv $install/$_gems/gems/${PACKAGE#*-}-$VERSION/doc/ $docdir
+fi
 
-      s:write ('make ')
+if [ -d $docdir ]; then
+  # move man pages
+  unset man_to_copy
+  for i in $(seq 1 8); do
+    for j in $(find $docdir -type f -name "*.$i" | sed '/LGPL-2\.1/d'); do
+      man_to_copy="$man_to_copy $j"
+    done
+  done
+  if [ -n "$man_to_copy" ]; then
+    cook_pick_manpages $man_to_copy
+    rm $man_to_copy
+  fi
 
-      if m.jobs then
-         s:write (lib.printf ('-j%s ', m.jobs))
-      end
+  # Install UTF-8 locale
+  tazpkg -gi --quiet --local --cookmode locale-en-base
+  mkdir -p /usr/lib/locale
+  localedef -i 'en_US' -c -f 'UTF-8' /usr/lib/locale/en_US.UTF-8
+  # convert rdoc to markdown (thanks https://gist.github.com/teeparham/8a99e308884e1c32735a)
+  for i in $(find $docdir -type f -name '*.rdoc'); do
+    LC_ALL=en_US.UTF-8 \
+    ruby -r rdoc -e 'puts RDoc::Markup::ToMarkdown.new.convert File.read(ARGV[0] || "'$i'")' \
+    >$i.md && rm $i || rm $i.md
+  done
+fi
 
-      if m.makeargs then
-         s:write (outputPairs (m.makeargs, '%s ', '%s="%s" ', 'make.makeargs'))
-      end
-
-      s:write ('&&\n')
-
-      -- make install
-      if m.makevars then
-         s:write (outputPairs (m.makevars, '%s ', '%s="%s" ', 'make.makevars'))
-      end
-
-      s:write ('make ')
-
-      if m.jobs then
-         s:write (lib.printf ('-j%s ', m.jobs))
-      end
-
-      if m.makeargs then
-         s:write (outputPairs (m.makeargs, '%s ', '%s="%s" ', 'make.makeargs'))
-      end
-
-      if m.destdir and m.destdir == 'keep' then
-         s:write ('DESTDIR=$install ')
-      end
-
-      s:write ('install || return 1\n')
+# move man pages (from the different place)
+rubyman=$install/$_gems/gems/${PACKAGE#*-}-$VERSION/man
+if [ -d $rubyman ]; then
+  unset man_to_copy
+  for i in $(seq 1 8); do
+    for j in $(find $rubyman -type f -name "*.$i" | sed '/LGPL-2\.1/d'); do
+      man_to_copy="$man_to_copy $j"
+    done
+  done
+  if [ -n "$man_to_copy" ]; then
+    cook_pick_manpages $man_to_copy
+  fi
+  rm -r $rubyman
+fi
+]])
 
    end
 
-   s:write ('\n}\n')
+   s:write ('}\n')
 end
 
 
@@ -322,25 +405,19 @@ local function make (recipe, script)
    local s -- script handler
    s = io.open (script, 'w')
 
-   s:write ('# global variables:\n')
-   for i, j in pairs (conf.flags[conf.arch]) do
-      if type (j) == 'string' then
-         s:write (lib.printf('%s="%s"\n', i, j))
-      elseif type (j) == 'table' then
-         for k, l in pairs (j) do
-            s:write (lib.printf('%s="%s"\n', k, l))
-         end
-      end
-   end
+   s:write (
+      '# global variables:\n' ..
+      Pairs (conf.flags[conf.arch], 'export %s\n') ..
 
-   s:write ('\n# package variables:\n')
-   s:write ('PACKAGE="' .. recipe.name .. '"\n')
-   s:write ('VERSION="' .. recipe.version .. '"\n')
+      '\n# package variables:\n' ..
+      'PACKAGE="' .. recipe.name .. '"\n' ..
+      'VERSION="' .. recipe.version .. '"\n' ..
+      'TARBALL="' .. recipe.src[1].file .. '"\n' ..
 
-   -- FIXME
-   s:write ('\n# useful variables:\n')
-   s:write ('src="..."\n')
-   s:write ('install="..."\n')
+      '\n# useful variables:\n' ..
+      'src="'     .. conf.wok .. recipe.name .. '/src/' .. recipe.name .. '-' .. recipe.version ..'"\n' ..
+      'install="' .. conf.wok .. recipe.name .. '/install"\n'
+      )
 
    makePrepare (recipe, s)
    makeMake    (recipe, s)
@@ -354,9 +431,5 @@ end
 
 
 return {
-   makePrepare = makePrepare,
-   makeMake    = makeMake,
-   makePost    = makePost,
-   makeTest    = makeTest,
    make        = make
 }
