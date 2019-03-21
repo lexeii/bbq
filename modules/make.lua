@@ -79,8 +79,8 @@ end
 
 
 
-local function getPatchFromRecipe (recipe, filename, dir)
-   local index, hand
+local function getFileFromRecipe (recipe, filename, dir)
+   local index, file
 
    if not recipe.files then
       die ("\n%{red}ERROR: Can't get file \"%s\" from recipe (no files defined)", filename)
@@ -96,12 +96,14 @@ local function getPatchFromRecipe (recipe, filename, dir)
    end
 
    if recipe.files[index].link then
-      lib.exec ('cp %s %s', recipe.files[index].link, dir..filename)
+      lib.exec ('cd %s; cp %s %s',
+         conf.wok .. recipe.name,
+         './' .. recipe.files[index].link, dir..filename)
 
    elseif recipe.files[index].content then
-      hand = io.open (dir..'temp', 'w')
-      hand:write (recipe.files[index].content)
-      hand:close () -- or file will be partially saved
+      file = io.open (dir..'temp', 'w')
+      file:write (recipe.files[index].content)
+      file:close () -- or file will be partially saved
 
       if recipe.files[index].type then
          if recipe.files[index].type == 'base64' then
@@ -137,7 +139,7 @@ local function makePrepare (recipe, s)
          if v.url then
             getPatchFromUrl (v, patchdir)
          elseif v.name then
-            getPatchFromRecipe (recipe, v.name, patchdir)
+            getFileFromRecipe (recipe, v.name, patchdir)
          end
 
          s:write (lib.printf('patch %s -i %s\n', (v.args or '-Np1'), patchdir..v.name))
@@ -228,6 +230,18 @@ local function makeMake (recipe, s)
          Pairs (m.destdir, 'DESTDIR=$install ') .. 'install || return 1\n'
          )
 
+   elseif m.type == 'perl' then
+      s:write (
+         'PERL_MM_USE_DEFAULT=1 \\\n' .. Pairs (m.vars, '%s \\\n') ..
+         'perl Makefile.PL \\\n' ..
+         '\tINSTALLDIRS=vendor \\\n' .. Pairs (m.args, '\t%s \\\n') ..
+         '\t&&\n' ..
+         Pairs (m.makevars, '%s ') .. 'make ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.makeargs, '%s ') .. '&&\n' ..
+         Pairs (m.makevars, '%s ') .. 'make ' .. Pairs (m.jobs, '-j%s ') .. Pairs (m.makeargs, '%s ') ..
+         'PERL_MM_USE_DEFAULT=1 DESTDIR=$install install &&\n' ..
+         'chmod -R u+w $install\n'
+         )
+
    elseif m.type == 'cmake' then
       s:write (
          Pairs ((m.build or 'build'), 'mkdir %s\n') ..
@@ -256,21 +270,23 @@ local function makeMake (recipe, s)
 
    elseif m.type == 'python2' then
       s:write (
-         'python2 -B setup.py install --root=$install &&\n' ..
+         'python2 -B setup.py install ' .. Pairs (m.args, '%s ') .. '--root=$install &&\n' ..
          "find $install -type f -name '*.pyc' -delete\n"
          )
 
    elseif m.type == 'python3' then
       s:write (
-         'python3 -B setup.py install --root=$install &&\n' ..
+         'python3 -B setup.py install ' .. Pairs (m.args, '%s ') .. '--root=$install &&\n' ..
          "find $install -type f -name '*.pyc' -delete\n"
          )
 
    elseif m.type == 'python2+3' then
       s:write (
-         'python2 -B setup.py install --root=$install &&\n' ..   -- use $install for python2
+         -- use $install for python2
+         'python2 -B setup.py install ' .. Pairs (m.args, '%s ') .. '--root=$install &&\n' ..
          "find $install -type f -name '*.pyc' -delete\n" ..
-         'python3 -B setup.py install --root=$install-3 &&\n' .. -- use $install-3 for python3
+         -- use $install-3 for python3
+         'python3 -B setup.py install ' .. Pairs (m.args, '%s ') .. '--root=$install-3 &&\n' ..
          "find $install-3 -type f -name '*.pyc' -delete\n"
          )
 
@@ -357,26 +373,199 @@ fi
 
    end
 
+   s:write (Pairs (m.rules, '%s\n'))
+
    s:write ('}\n')
 end
 
 
 
 
+-- if the file defined in 'files:' then install it from $files (it is already there),
+-- otherwise install it from current path ($src)
+local function installFile (recipe, name, to, mode)
+   local prefix = ''
+
+   if recipe.files then
+      for _,i in ipairs (recipe.files) do
+         if i.name == name then
+            prefix = '$files/'
+         end
+      end
+   end
+
+   return (lib.printf ('install -Dm%s %s %s\n', mode, prefix..name, to))
+end
+
+
+local function installBranch (recipe, branch, to, mode)
+   local ret = ''
+   if branch then
+      if type (branch) == 'string' then
+         ret = ret .. installFile (recipe, branch, to..branch, mode)
+      elseif type (branch) == 'table' then
+         for _,i in ipairs (branch) do
+            if type (i) == 'string' then
+               ret = ret .. installFile (recipe, i, to..i, mode)
+            elseif type (i) == 'table' then
+               if i.to:match ('/$') then
+                  -- install to specified folder with the original name
+                  ret = ret .. installFile (recipe, i.from, '$install'..i.to..i.from, (i.mode or '644'))
+               else
+                  -- install to specified folder/name
+                  ret = ret .. installFile (recipe, i.from, '$install'..i.to,         (i.mode or '644'))
+               end
+            end
+         end
+      end
+   end
+   return ret
+end
+
+
+
+
+local function iconSize (fileName)
+   local file, w, h, tmp, svg, ew, eh, ev, v
+
+   -- four bytes - to size
+   local function qb2s (qb)
+      return (((qb:byte(1) * 256 + qb:byte(2)) * 256 + qb:byte(3)) * 256 + qb:byte(4))
+   end
+
+   file = io.open (fileName, 'rb')
+
+   if fileName:match ('%.png$') then
+      file:seek ('set', 16)    -- skip 16 bytes
+      w = qb2s (file:read (4)) -- https://www.w3.org/TR/PNG/#11IHDR
+      h = qb2s (file:read (4))
+      file:close ()
+   elseif fileName:match ('%.svg$') then
+      -- yes, using regexps to parse an XML, but kitten will be alive :-)
+      tmp  = file:read ('*a')
+      file:close ()
+      svg  = tmp:gsub ('.*<svg([^>]*)>.*$'  , '%1') :gsub ('[\a\r]', ' ')
+
+      w,ew = svg:gsub ('.*width="(%d+)p*x*".*$' , '%1')
+      h,eh = svg:gsub ('.*height="(%d+)p*x*".*$', '%1')
+      if ew == 0 or eh == 0 then
+         -- 'width="..."' and/or 'heigth="..."' missing, try to use 'viewBox="..."'
+         v,ev = svg:gsub ('.*viewBox="([^"]+)".*$', '%1')
+         if ev ~= 0 then
+            w,ew = v:gsub ('[%d%.]+[^%d%.]+[%d%.]+[^%d%.]+([%d%.]+)[^%d%.]+[%d%.]+', '%1')
+            h,eh = v:gsub ('[%d%.]+[^%d%.]+[%d%.]+[^%d%.]+[%d%.]+[^%d%.]+([%d%.]+)', '%1')
+            if ew == 0 or eh == 0 then w,h = 0, 0 end
+         else
+            return 0, 0 -- error
+         end
+      end
+   else
+      return 0, 0 -- error
+   end
+   return w, h
+end
+
+
+--[[
+
+| cmd: foo        | desktop: foo.desktop
+|-----------------|-------------------------------------
+| cmd: [foo, bar] | desktop: [foo.desktop, bar.desktop]
+|-----------------|-------------------------------------
+| cmd:            | desktop:
+| - foo           | - foo.desktop
+| - bar           | - bar.desktop
+
+---
+
+|file:
+|- from: foo
+|  to  : /usr/share/bar/ # copy 'foo' to folder '/usr/share/bar/'
+  # default mode is 644
+|- from: bar
+|  to  : /usr/share/baz  # copy 'bar' as file '/usr/share/baz'
+|  mode: 444
+
+---
+
+if nothing but 'rules:', short form allowed:
+|post:
+|  rules: <rules>
+
+|post: <rules>
+
+---
+
+icon:
+- name: foo.png  # file name from the 'files:' branch
+  to  : bar.png  # optional new file name (allow name without '.png' or '.svg')
+  cat : status   # optional; default is 'apps'
+  size: 48       # optional; default is WxH read from file; also 'scalable' and 'symbolic' are supported
+- from: icons/foo.svg # file name related to $src
+  to  : home     # optional new file name (allow name without '.png' or '.svg')
+  cat : places   # optional; default is 'apps'
+  size: 16       # mandatory, because we can't guess the size at the rules creation time
+--]]
+
 local function makePost (recipe, s)
    local p = recipe.post
-
-   if not p then
-      return -- no post rules
-   end
+   local w,h, filesdir, dir, basename
 
    s:write ('\npost_rules() {\n')
 
-   if p.rules then
-      s:write ('# rules\n')
+   if type (p) == 'string' then
+      s:write (Pairs (p, '%s\n')) -- short form, only rules
+   elseif type (p) == 'table' then
+      s:write (Pairs (p.rules, '%s\n'))
+
+      s:write (installBranch (recipe, p.cmd,     '$install/usr/bin/',           '755'))
+      s:write (installBranch (recipe, p.desktop, '$install/usr/share/desktop/', '644'))
+      s:write (installBranch (recipe, p.file))
+
+      if p.icon then
+         filesdir = conf.wok .. recipe.name .. '/files/'
+         lib.emptyDir (filesdir)
+
+         for _,j in ipairs (p.icon) do
+            if j.name then
+               getFileFromRecipe (recipe, j.name, filesdir)
+               if j.size then
+                  if j.size == 'scalable' or j.size == 'symbolic' then
+                     dir = j.size
+                  else
+                     dir = j.size .. 'x' .. j.size
+                  end
+               else
+                  w,h = iconSize (filesdir..j.name)
+                  dir = w .. 'x' .. h
+               end
+               s:write (lib.printf ('install -Dm644 %s $install/usr/share/icons/hicolor/%s/%s/%s\n',
+                  filesdir..j.name, dir, (j.cat or 'apps'), (j.to or j.name))
+                  )
+            elseif j.from then
+               if j.size then
+                  if j.size == 'scalable' or j.size == 'symbolic' then
+                     dir = j.size
+                  else
+                     dir = j.size .. 'x' .. j.size
+                  end
+               else
+                  die ('Undefined size to copy icon')
+               end
+               basename = j.from:gsub ('^.*/', '')
+               s:write (lib.printf ('install -Dm644 $src/%s $install/usr/share/icons/hicolor/%s/%s/%s\n',
+                  j.from, dir, (j.cat or 'apps'), (j.to or basename))
+                  )
+            end
+         end
+      end
+
+   else
+      s:write ('\t:\n')
    end
 
-   s:write ('\n}\n')
+
+   s:write ('}\n')
 end
 
 
@@ -405,18 +594,22 @@ local function make (recipe, script)
    local s -- script handler
    s = io.open (script, 'w')
 
+   local tarball
+   if recipe.src then tarball = recipe.src[1].file end
+
    s:write (
       '# global variables:\n' ..
       Pairs (conf.flags[conf.arch], 'export %s\n') ..
 
       '\n# package variables:\n' ..
-      'PACKAGE="' .. recipe.name .. '"\n' ..
-      'VERSION="' .. recipe.version .. '"\n' ..
-      'TARBALL="' .. recipe.src[1].file .. '"\n' ..
+      Pairs (recipe.name,    'PACKAGE="%s"\n') ..
+      Pairs (recipe.version, 'VERSION="%s"\n') ..
+      Pairs (tarball,        'TARBALL="%s"\n') ..
 
       '\n# useful variables:\n' ..
       'src="'     .. conf.wok .. recipe.name .. '/src/' .. recipe.name .. '-' .. recipe.version ..'"\n' ..
-      'install="' .. conf.wok .. recipe.name .. '/install"\n'
+      'install="' .. conf.wok .. recipe.name .. '/install"\n' ..
+      'files="'   .. conf.wok .. recipe.name .. '/files"\n'
       )
 
    makePrepare (recipe, s)
