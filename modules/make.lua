@@ -511,6 +511,25 @@ local function makePost (recipe, s)
    local p = recipe.post
    local w,h, filesdir, dir, basename
 
+   -- shell functions to copy man pages and docs
+   s:write [[
+cook_pick_manpages() {
+   local name section
+   for i in $@; do
+      name=$(echo $i | sed 's|\.[gbx]z2*$||')
+      section=${name##*/}; section=${section##*.}
+      mkdir -p $install/usr/share/man/man$section
+      scopy $i $install/usr/share/man/man$section
+   done
+}
+cook_pick_docs() {
+   local docdir="$install/usr/share/doc/$PACKAGE-$VERSION"
+   mkdir -p $docdir
+   cp -r $@ $docdir
+   chmod -R a+r $docdir
+}
+]]
+
    s:write ('\npost_rules() {\n')
 
    if type (p) == 'string' then
@@ -559,6 +578,9 @@ local function makePost (recipe, s)
             end
          end
       end
+
+      s:write (Pairs (p.doc, 'cook_pick_docs %s\n'))
+      s:write (Pairs (p.man, 'cook_pick_manpages %s\n'))
 
    else
       s:write ('\t:\n')
