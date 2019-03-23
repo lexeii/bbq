@@ -124,34 +124,38 @@ local function makePrepare (recipe, s)
    local p = recipe.prepare
    local patchdir
 
-   if not p then
-      return -- no prepare rules
-   end
-
    s:write ('\nprepare_rules() {\n')
 
-   if p.patches then
-      patchdir = conf.wok .. recipe.name .. '/patches/'
-      lib.emptyDir (patchdir)
+   if type (p) == 'string' then
+      s:write ('\n# rules:\n' .. p) -- short form of 'prepare.rules:' is just 'prepare:'
+   elseif type (p) == 'table' then
 
-      s:write ('\n# patches:\n')
-      for _, v in ipairs (p.patches) do
-         if v.url then
-            getPatchFromUrl (v, patchdir)
-         elseif v.name then
-            getFileFromRecipe (recipe, v.name, patchdir)
+      if p.patches then
+         patchdir = conf.wok .. recipe.name .. '/patches/'
+         lib.emptyDir (patchdir)
+
+         s:write ('\n# patches:\n')
+         for _, v in ipairs (p.patches) do
+            if v.url then
+               getPatchFromUrl (v, patchdir)
+            elseif v.name then
+               getFileFromRecipe (recipe, v.name, patchdir)
+            end
+
+            s:write (lib.printf('patch %s -i %s\n', (v.args or '-Np1'), patchdir..v.name))
+
          end
-
-         s:write (lib.printf('patch %s -i %s\n', (v.args or '-Np1'), patchdir..v.name))
-
       end
+
+      if p.rules then
+         s:write ('\n# rules:\n' .. p.rules)
+      end
+
+   else
+      s:write (':\n') --define empty function
    end
 
-   if p.rules then
-      s:write ('\n# rules:\n' .. p.rules)
-   end
-
-   s:write ('\n}\n')
+   s:write ('}\n')
 end
 
 
@@ -603,17 +607,21 @@ end
 local function makeTest (recipe, s)
    local t = recipe.test
 
-   if not t then
-      return -- no test rules
-   end
-
    s:write ('\ntest_rules() {\n')
 
-   if t.rules then
-      s:write ('# rules\n')
+   if type (t) == 'string' then
+      s:write (t .. '\n') -- short form of 'test.rules:' is just 'test:'
+   elseif type (t) == 'table' then
+      if t.rules then
+         s:write (t.rules .. '\n')
+      else
+         s:write (':\n') --define empty function
+      end
+   else
+      s:write (':\n') --define empty function
    end
 
-   s:write ('\n}\n')
+   s:write ('}\n')
 end
 
 
@@ -646,6 +654,16 @@ local function make (recipe, script)
    makePost    (recipe, s)
    makeTest    (recipe, s)
 
+   s:write [[
+
+if [ -n "$continue" ]; then
+   prepare_rules || return 1
+fi
+make_rules &&
+post_rules &&
+test_rules
+]]
+
    s:close()
 end
 
@@ -653,5 +671,5 @@ end
 
 
 return {
-   make        = make
+   make = make
 }
