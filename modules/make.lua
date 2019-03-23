@@ -513,6 +513,13 @@ local function makePost (recipe, s)
 
    -- shell functions to copy man pages and docs
    s:write [[
+scopy() {
+   if [ "$(stat -c %h -- "$1")" -eq 1 ]; then
+      cp -a  "$1" "$2"  # copy generic files
+   else
+      cp -al "$1" "$2"  # copy hardlinks
+   fi
+}
 cook_pick_manpages() {
    local name section
    for i in $@; do
